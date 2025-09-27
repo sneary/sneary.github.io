@@ -1,0 +1,38 @@
+name: Deploy to GitHub Pages
+
+on:
+  # Runs on pushes to the main branch
+  push:
+    branches:
+      - main
+  # Allows you to run this workflow manually from the Actions tab
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Replace placeholders with secrets
+        run: |
+          sed -i "s|__GCP_CLIENT_ID__|${{ secrets.GCP_CLIENT_ID }}|g" index.html
+          sed -i "s|__GCP_API_KEY__|${{ secrets.GCP_API_KEY }}|g" index.html
+
+      - name: Setup Pages
+        uses: actions/configure-pages@v3
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v2
+        with:
+          path: '.'
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v2
