@@ -1,0 +1,507 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Schedule to Calendar Assistant</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://apis.google.com/js/api.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+        }
+        /* Simple spinner for loading states */
+        .loader {
+            border: 4px solid #f3f3f3;
+            border-top: 4px solid #3498db;
+            border-radius: 50%;
+            width: 24px;
+            height: 24px;
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body class="bg-gray-100 text-gray-800 min-h-screen flex items-center justify-center p-4">
+
+    <div class="w-full max-w-4xl mx-auto bg-white rounded-2xl shadow-lg p-6 md:p-8">
+        <header class="text-center mb-6">
+            <h1 class="text-3xl md:text-4xl font-bold text-gray-900">Schedule Assistant</h1>
+            <p class="mt-2 text-gray-600">Upload your schedule to view shifts and add them to your Google Calendar.</p>
+        </header>
+
+        <!-- Google Auth Section -->
+        <div id="auth-section" class="text-center mb-6 p-4 bg-blue-50 rounded-lg border border-blue-200">
+             <p class="mb-3 text-blue-800">Please sign in with Google to add shifts to your calendar.</p>
+            <button id="authorize_button" onclick="handleAuthClick()" class="bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2 px-6 rounded-lg transition-transform transform hover:scale-105 shadow-md">
+                Sign in with Google
+            </button>
+            <button id="signout_button" onclick="handleSignoutClick()" class="hidden bg-gray-500 hover:bg-gray-600 text-white font-semibold py-2 px-6 rounded-lg transition-transform transform hover:scale-105 shadow-md">
+                Sign Out
+            </button>
+             <p id="auth-status" class="text-sm mt-3 text-green-700 font-medium"></p>
+        </div>
+
+        <!-- File Upload Section -->
+        <div id="upload-section" class="mb-6 text-center">
+            <label for="fileInput" class="block text-lg font-medium text-gray-700 mb-2">1. Upload Schedule File</label>
+            <div class="mt-2 flex justify-center px-6 pt-5 pb-6 border-2 border-gray-300 border-dashed rounded-md transition-colors">
+                <div class="space-y-1 text-center">
+                    <svg class="mx-auto h-12 w-12 text-gray-400" stroke="currentColor" fill="none" viewBox="0 0 48 48" aria-hidden="true">
+                        <path d="M28 8H12a4 4 0 00-4 4v20m32-12v8m0 0v8a4 4 0 01-4 4H12a4 4 0 01-4-4v-4m32-4l-3.172-3.172a4 4 0 00-5.656 0L28 28M8 32l9.172-9.172a4 4 0 015.656 0L28 28m0 0l4 4m4-24h8m-4-4v8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+                    </svg>
+                    <div class="flex text-sm text-gray-600">
+                        <label for="fileInput" class="relative cursor-pointer bg-white rounded-md font-medium text-indigo-600 hover:text-indigo-500 focus-within:outline-none focus-within:ring-2 focus-within:ring-offset-2 focus-within:ring-indigo-500">
+                            <span>Upload a file</span>
+                            <input id="fileInput" name="fileInput" type="file" class="sr-only" accept=".csv, .xlsx, .xls">
+                        </label>
+                        <p class="pl-1">or drag and drop</p>
+                    </div>
+                    <p class="text-xs text-gray-500">CSV or Excel files only</p>
+                    <p id="fileName" class="text-sm font-medium text-green-600 pt-2"></p>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Name Selection Section -->
+        <div id="names-section" class="hidden mb-6">
+            <h2 class="text-lg font-medium text-gray-700 mb-3 text-center">2. Select a Name</h2>
+            <div id="names-buttons" class="flex flex-wrap justify-center gap-3">
+                <!-- Name buttons will be injected here -->
+            </div>
+        </div>
+        
+        <!-- Shifts Display Section -->
+        <div id="shifts-section" class="hidden">
+            <h2 id="shifts-header" class="text-xl font-semibold text-gray-800 mb-4 text-center"></h2>
+            <div id="shifts-list" class="space-y-4">
+                <!-- Shifts will be injected here -->
+            </div>
+        </div>
+
+    </div>
+
+    <script>
+        // --- CONFIGURATION ---
+        // IMPORTANT: Replace with your Google Cloud project's Client ID and API Key.
+        const CLIENT_ID = '__GCP_CLIENT_ID__';
+        const API_KEY = '__GCP_API_KEY__';
+        const DISCOVERY_DOC = 'https://www.googleapis.com/discovery/v1/apis/calendar/v3/rest';
+        const SCOPES = 'https://www.googleapis.com/auth/calendar.events';
+
+        let tokenClient;
+        let gapiInited = false;
+        let gisInited = false;
+
+        let scheduleData = {
+            allRows: [],
+            weeklyHeaders: [],
+            employeeRows: {},
+            uniqueNames: []
+        };
+        
+        // --- DOM Elements ---
+        const fileInput = document.getElementById('fileInput');
+        const fileNameDisplay = document.getElementById('fileName');
+        const namesSection = document.getElementById('names-section');
+        const namesButtonsContainer = document.getElementById('names-buttons');
+        const shiftsSection = document.getElementById('shifts-section');
+        const shiftsHeader = document.getElementById('shifts-header');
+        const shiftsList = document.getElementById('shifts-list');
+        const authorizeButton = document.getElementById('authorize_button');
+        const signoutButton = document.getElementById('signout_button');
+        const authStatus = document.getElementById('auth-status');
+
+        // --- Event Listeners ---
+        fileInput.addEventListener('change', (e) => handleFileSelect(e.target));
+        const dropZone = fileInput.closest('.border-dashed');
+
+        dropZone.addEventListener('dragover', (e) => {
+            e.stopPropagation();
+            e.preventDefault();
+            e.dataTransfer.dropEffect = 'copy';
+            dropZone.classList.add('border-indigo-500', 'bg-indigo-50');
+        });
+
+        dropZone.addEventListener('dragleave', (e) => {
+            e.stopPropagation();
+            e.preventDefault();
+            dropZone.classList.remove('border-indigo-500', 'bg-indigo-50');
+        });
+
+        dropZone.addEventListener('drop', (e) => {
+            e.stopPropagation();
+            e.preventDefault();
+            dropZone.classList.remove('border-indigo-500', 'bg-indigo-50');
+            const files = e.dataTransfer.files;
+            if (files.length > 0) {
+                fileInput.files = files;
+                handleFileSelect(fileInput);
+            }
+        });
+
+
+        // --- Google API Initialization ---
+        function gapiLoaded() {
+            gapi.load('client', initializeGapiClient);
+        }
+
+        async function initializeGapiClient() {
+            await gapi.client.init({
+                apiKey: API_KEY,
+                discoveryDocs: [DISCOVERY_DOC],
+            });
+            gapiInited = true;
+            // On load, check if we have a stored token from a previous session
+            const storedToken = sessionStorage.getItem("google_token");
+            if (storedToken) {
+                gapi.client.setToken(JSON.parse(storedToken));
+                updateAuthStatus(true);
+            }
+            maybeEnableButtons();
+        }
+
+        function gisLoaded() {
+            tokenClient = google.accounts.oauth2.initTokenClient({
+                client_id: CLIENT_ID,
+                scope: SCOPES,
+                callback: '', // defined later
+            });
+            gisInited = true;
+            maybeEnableButtons();
+        }
+
+        function maybeEnableButtons() {
+            if (gapiInited && gisInited) {
+                authorizeButton.style.visibility = 'visible';
+            }
+        }
+        
+        // --- Authentication Handlers ---
+        function handleAuthClick() {
+            tokenClient.callback = async (resp) => {
+                if (resp.error !== undefined) {
+                    throw (resp);
+                }
+                updateAuthStatus(true);
+                // Store the token in session storage to persist login
+                sessionStorage.setItem("google_token", JSON.stringify(gapi.client.getToken()));
+            };
+
+            if (gapi.client.getToken() === null) {
+                tokenClient.requestAccessToken({ prompt: 'consent' });
+            } else {
+                 tokenClient.requestAccessToken({ prompt: '' });
+            }
+        }
+
+        function handleSignoutClick() {
+            const token = gapi.client.getToken();
+            if (token !== null) {
+                google.accounts.oauth2.revoke(token.access_token);
+                gapi.client.setToken('');
+                updateAuthStatus(false);
+                // Remove the stored token on sign out
+                sessionStorage.removeItem("google_token");
+            }
+        }
+        
+        function updateAuthStatus(isSignedIn) {
+            if (isSignedIn) {
+                authorizeButton.classList.add('hidden');
+                signoutButton.classList.remove('hidden');
+                authStatus.textContent = 'You are signed in.';
+            } else {
+                authorizeButton.classList.remove('hidden');
+                signoutButton.classList.add('hidden');
+                authStatus.textContent = '';
+            }
+            // Re-render shifts to enable/disable buttons based on auth state
+            const currentName = shiftsHeader.textContent.replace('Shifts for ', '');
+            if(currentName) showShiftsForName(currentName);
+        }
+
+        // --- File Handling and Parsing ---
+        function handleFileSelect(inputElement) {
+            const file = inputElement.files[0];
+            if (!file) return;
+
+            fileNameDisplay.textContent = file.name;
+            const reader = new FileReader();
+            const fileExtension = file.name.split('.').pop().toLowerCase();
+
+            reader.onload = function(e) {
+                let allRows;
+                try {
+                    if (fileExtension === 'csv') {
+                        const text = e.target.result;
+                        allRows = text.split('\n').map(row => row.split(',').map(cell => cell.trim()));
+                    } else if (['xlsx', 'xls'].includes(fileExtension)) {
+                        const data = e.target.result;
+                        const workbook = XLSX.read(data, {type: 'array'});
+                        const firstSheetName = workbook.SheetNames[0];
+                        const worksheet = workbook.Sheets[firstSheetName];
+                        // Robust Fix: Convert Excel to CSV text first to preserve formatting
+                        const csvText = XLSX.utils.sheet_to_csv(worksheet, { defval: '' });
+                        allRows = csvText.split('\n').map(row => row.split(','));
+                    } else {
+                        return; // Should not happen due to 'accept' attribute
+                    }
+                    processScheduleData(allRows);
+                } catch (error) {
+                    console.error("Error parsing file:", error);
+                    alert("There was an error parsing your file. Please ensure it is a valid schedule file.");
+                }
+            };
+
+            if (fileExtension === 'csv') {
+                reader.readAsText(file);
+            } else if (['xlsx', 'xls'].includes(fileExtension)) {
+                reader.readAsArrayBuffer(file);
+            } else {
+                alert("Unsupported file type. Please upload a CSV or Excel file.");
+                fileNameDisplay.textContent = '';
+            }
+        }
+
+        function processScheduleData(allRows) {
+            scheduleData = { allRows: [], weeklyHeaders: [], employeeRows: {}, uniqueNames: new Set() };
+            scheduleData.allRows = allRows;
+
+            const currentYear = new Date().getFullYear();
+
+            allRows.forEach((row, i) => {
+                if (!row || row.length === 0) return;
+                
+                const safeRow = row.map(cell => (cell !== null && cell !== undefined) ? String(cell).trim() : '');
+                if (safeRow.every(cell => cell === '')) return;
+
+                const headerText = safeRow[0];
+                const match = headerText.match(/([a-zA-Z]{3,})\s*(\d+)/);
+                if (match) {
+                    let startDate = parseDateFromHeader(headerText, currentYear);
+                    if (startDate) {
+                        scheduleData.weeklyHeaders.push({ index: i, date: startDate });
+                    }
+                }
+                
+                const name = safeRow[0];
+                if (name && name.split(' ').length < 3 && !match && !/total|manager|rto/i.test(name)) {
+                     scheduleData.uniqueNames.add(name);
+                     if (!scheduleData.employeeRows[name.toLowerCase()]) {
+                         scheduleData.employeeRows[name.toLowerCase()] = [];
+                     }
+                     scheduleData.employeeRows[name.toLowerCase()].push({ index: i, data: safeRow });
+                }
+            });
+            scheduleData.uniqueNames = [...scheduleData.uniqueNames].sort();
+            displayNameButtons();
+        }
+        
+        function parseDateFromHeader(headerText, year) {
+            const match = headerText.match(/([a-zA-Z]{3,})\s*(\d+)/);
+            if (!match) return null;
+            
+            const monthName = match[1];
+            const day = parseInt(match[2], 10);
+            const dateStr = `${monthName} ${day} ${year}`;
+            
+            let startDate;
+            try {
+                startDate = new Date(dateStr);
+                if (isNaN(startDate.getTime())) throw new Error();
+            } catch (e) {
+                return null;
+            }
+            return startDate;
+        }
+
+        // --- UI Display ---
+        function displayNameButtons() {
+            namesButtonsContainer.innerHTML = '';
+            scheduleData.uniqueNames.forEach(name => {
+                const button = document.createElement('button');
+                button.textContent = name;
+                button.className = "bg-gray-200 hover:bg-gray-300 text-gray-800 font-medium py-2 px-4 rounded-lg transition";
+                button.onclick = () => showShiftsForName(name);
+                namesButtonsContainer.appendChild(button);
+            });
+            namesSection.classList.remove('hidden');
+            shiftsSection.classList.add('hidden');
+        }
+
+        function showShiftsForName(name) {
+            shiftsHeader.textContent = `Shifts for ${name}`;
+            shiftsList.innerHTML = '';
+            
+            const empRows = scheduleData.employeeRows[name.toLowerCase()] || [];
+
+            if (empRows.length === 0) {
+                 shiftsList.innerHTML = `<p class="text-center text-gray-500">No shifts found for ${name}.</p>`;
+                 shiftsSection.classList.remove('hidden');
+                 return;
+            }
+
+            empRows.forEach(empRow => {
+                let correctHeader = null;
+                for (const header of scheduleData.weeklyHeaders) {
+                    if (header.index < empRow.index) {
+                        correctHeader = header;
+                    } else {
+                        break;
+                    }
+                }
+
+                if (correctHeader) {
+                    const weekDiv = document.createElement('div');
+                    weekDiv.className = 'p-4 bg-gray-50 rounded-lg border';
+                    const weekTitle = document.createElement('h3');
+                    weekTitle.textContent = `Week of ${correctHeader.date.toLocaleDateString('en-US', { month: 'long', day: 'numeric' })}`;
+                    weekTitle.className = 'font-semibold text-lg mb-3';
+                    weekDiv.appendChild(weekTitle);
+                    
+                    const daysOfWeek = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+                    for (let i = 0; i < daysOfWeek.length; i++) {
+                        const shiftDate = new Date(correctHeader.date);
+                        shiftDate.setDate(shiftDate.getDate() + i);
+                        
+                        const shift = (empRow.data[i + 1] || '').trim();
+                        if (shift) {
+                            const shiftItem = document.createElement('div');
+                            shiftItem.className = 'flex items-center justify-between p-2 rounded-md even:bg-white';
+                            
+                            const shiftText = document.createElement('p');
+                            shiftText.innerHTML = `<span class="font-medium">${daysOfWeek[i]}</span> (${shiftDate.toLocaleDateString('en-CA')}): <span class="text-blue-600">${shift}</span>`;
+                            
+                            const addButton = document.createElement('button');
+                            addButton.innerHTML = 'Add to Calendar';
+                            addButton.className = "ml-4 bg-green-500 hover:bg-green-600 text-white text-sm font-semibold py-1 px-3 rounded-md transition disabled:opacity-50 disabled:cursor-not-allowed";
+                            if (!gapi.client.getToken()) addButton.disabled = true;
+
+                            addButton.onclick = (e) => {
+                                e.target.innerHTML = '<div class="loader mx-auto"></div>';
+                                e.target.disabled = true;
+                                addEventToCalendar(name, shiftDate, shift, e.target);
+                            };
+                            
+                            shiftItem.appendChild(shiftText);
+                            shiftItem.appendChild(addButton);
+                            weekDiv.appendChild(shiftItem);
+                        }
+                    }
+                    shiftsList.appendChild(weekDiv);
+                }
+            });
+            shiftsSection.classList.remove('hidden');
+        }
+
+        // --- Google Calendar Logic ---
+        function parseShiftTimes(shiftStr) {
+            const parts = shiftStr.replace(/\(.*\)/, '').trim().split('-');
+            if (parts.length !== 2) return null;
+
+            let [startHour, endHour] = parts.map(p => parseInt(p.trim(), 10));
+            
+            if (isNaN(startHour) || isNaN(endHour)) return null;
+
+            // Handle AM/PM logic for common shift hours
+            if (startHour > 12) { // Unlikely but good to handle
+                 // Assume it's correct 24h time
+            } else if (startHour >= 7 && startHour <= 11) {
+                // Morning start, stays AM
+            } else { // 12, 1, 2, 3, 4, 5, 6
+                startHour += 12; // PM start
+                if(startHour === 24) startHour = 12; // Handle 12pm case
+            }
+
+            if (endHour > 12) {
+                // Assume it's correct 24h time
+            } else if (endHour >= 9 && endHour <= 12) {
+                // Morning/noon end time, check if it crosses noon
+                if (startHour > endHour) endHour += 12;
+            }
+             else { // 1-8
+                endHour += 12; // PM end
+            }
+            
+            // Final check for overnight shifts which are not handled here
+            // If end time is before start time after conversions, something is wrong
+            if (endHour < startHour) endHour += 12; // Simple overnight fix
+
+            const startTime = `${String(startHour).padStart(2, '0')}:00:00`;
+            const endTime = `${String(endHour).padStart(2, '0')}:00:00`;
+            
+            return { startTime, endTime };
+        }
+
+        function addEventToCalendar(name, date, shift, button) {
+             if (!gapi.client.getToken()) {
+                alert("Please sign in with Google first.");
+                button.innerHTML = 'Add to Calendar';
+                button.disabled = false;
+                return;
+            }
+
+            const times = parseShiftTimes(shift);
+            if (!times) {
+                alert(`Could not parse shift time: "${shift}"`);
+                button.innerHTML = 'Add to Calendar';
+                button.disabled = false;
+                return;
+            }
+            
+            const dateString = date.toISOString().split('T')[0];
+            const event = {
+                'summary': `Work Shift: ${name}`,
+                'description': `Scheduled shift: ${shift}`,
+                'start': {
+                    'dateTime': `${dateString}T${times.startTime}`,
+                    'timeZone': 'America/New_York'
+                },
+                'end': {
+                    'dateTime': `${dateString}T${times.endTime}`,
+                    'timeZone': 'America/New_York'
+                },
+            };
+            
+            const request = gapi.client.calendar.events.insert({
+                'calendarId': 'primary',
+                'resource': event,
+            });
+
+            // Using the .then() pattern for more reliable callbacks
+            request.then(function(response) {
+                console.log('Event created:', response);
+                button.innerHTML = 'Added!';
+                button.className = "ml-4 bg-teal-500 text-white text-sm font-semibold py-1 px-3 rounded-md";
+                button.disabled = true;
+            }, function(error) {
+                console.error("Google Calendar API Error:", error);
+                // The actual error message is in error.result.error.message
+                const errorMessage = error.result?.error?.message || "An unknown error occurred.";
+                alert(`Failed to add event: ${errorMessage}`);
+                button.innerHTML = 'Retry';
+                button.disabled = false;
+            });
+        }
+        
+        // Load Google API scripts
+        const scriptGapi = document.createElement('script');
+        scriptGapi.src = 'https://apis.google.com/js/api.js';
+        scriptGapi.onload = gapiLoaded;
+        document.body.appendChild(scriptGapi);
+
+        const scriptGis = document.createElement('script');
+        scriptGis.src = 'https://accounts.google.com/gsi/client';
+        scriptGis.onload = gisLoaded;
+        document.body.appendChild(scriptGis);
+
+    </script>
+</body>
+</html>
+
